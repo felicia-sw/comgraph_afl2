@@ -1,6 +1,6 @@
 # Simulasi Skenario Bahaya Luapan Kali Jagir dan Evakuasi Interaktif di Kawasan Pintu Air Jagir, Wonokromo, Surabaya
 
-**Mata Kuliah:** Grafika Komputer & GIS (AFL 2)  
+**Mata Kuliah:** Graphic Computer (AFL 2)  
 **Program Studi:** Informatika, Universitas Ciputra Surabaya  
 
 ---

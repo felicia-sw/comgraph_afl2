@@ -250,3 +250,4 @@ def generate_scenario_summary(buildings_gdf, shelters_gdf, jagir_water_gdf, stud
 
     summary_df = pd.DataFrame(rows)
     return summary_df
+
