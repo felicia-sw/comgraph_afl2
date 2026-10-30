@@ -25,11 +25,15 @@ CRS_METER = "EPSG:32749"    # WGS 84 / UTM Zone 49S (Satuan Metrik)
 WEST, SOUTH, EAST, NORTH = 112.728, -7.312, 112.760, -7.292
 CORE_BBOX = (WEST, SOUTH, EAST, NORTH)
 
-# Standar Skenario Radius Luapan (m)
-DEFAULT_SCENARIOS_M = [15, 50, 100, 200]
+# Standar Skenario Radius Luapan Sesuai Proposal Bab 1.2 & 2.2:
+# - 15 m  : Skenario dasar sempadan minimum sungai tidak bertanggul (Permen PUPR No. 28/PRT/M/2015)
+# - 100 m : Skenario luapan hipotetis sedang
+# - 200 m : Skenario luapan hipotetis besar
+DEFAULT_SCENARIOS_M = [15, 100, 200]
 
-# Standar minimum luas tapak jika titik shelter OSM tidak memiliki poligon (m²)
-# Luas 150 m² -> kapasitas 50 jiwa (sesuai standar 3 m²/jiwa Perka BNPB No. 7/2008)
+# Standar minimum luas tapak jika titik shelter OSM tidak memiliki geometri bangunan di OSM (m²).
+# Asumsi: Luas 150 m² -> kapasitas 50 jiwa (sesuai standar 3 m²/jiwa Perka BNPB No. 7/2008),
+# digunakan untuk 3 fasilitas titik OSM murni (Telkom University, Yohanes Pemandi, GPdI Bukit Zaitun).
 DEFAULT_MIN_SHELTER_AREA_M2 = 150.0
 
 
@@ -48,7 +52,8 @@ def get_study_area_polygon():
 def load_all_layers(data_dir="data"):
     """
     Memuat seluruh layer spasial offline dari direktori data/, melakukan transformasi CRS
-    ke EPSG:32749 (UTM Zone 49S), memotong ke area inti studi, dan menghitung estimasi kapasitas shelter.
+    ke EPSG:32749 (UTM Zone 49S), memotong ke area inti studi, dan menghitung estimasi kapasitas
+    shelter berdasarkan luas tapak bangunan aktual di dalam poligon/lahan shelter (Perka BNPB No. 7/2008).
     
     Args:
         data_dir (str): Lokasi folder data lokal.
@@ -84,7 +89,8 @@ def load_all_layers(data_dir="data"):
 
     # 3. Layer 2: Tapak Bangunan Warga (Polygon)
     buildings_path = os.path.join(data_dir, "buildings.geojson")
-    buildings = gpd.read_file(buildings_path).to_crs(CRS_METER).clip(study_area)
+    buildings_all = gpd.read_file(buildings_path).to_crs(CRS_METER)
+    buildings = buildings_all.clip(study_area)
     buildings = buildings[buildings.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
     buildings["luas_tapak_m2"] = buildings.geometry.area
 
@@ -92,30 +98,46 @@ def load_all_layers(data_dir="data"):
     shelters_path = os.path.join(data_dir, "shelters_raw.geojson")
     shelters_raw = gpd.read_file(shelters_path).to_crs(CRS_METER)
 
-    # Simpan luas poligon sebelum konversi ke titik representatif (centroid)
-    shelters_raw["poly_area_m2"] = shelters_raw.geometry.area
-    shelters = shelters_raw.copy()
-    shelters["geometry"] = shelters_raw.geometry.centroid
+    # Filter Aturan Proposal Bab 2.1:
+    # Dari 114 objek raw hasil query bbox area inti, 3 objek dengan centroid di luar core BBox
+    # dieksklusi, menghasilkan tepat 111 shelter (55 tempat ibadah, 47 sekolah, 9 kampus perguruan tinggi).
+    shelters = shelters_raw[shelters_raw.geometry.centroid.within(study_area)].copy()
 
-    # Filter Aturan Proposal: Hanya ambil shelter yang centroid-nya berada di dalam area inti
-    # (Dari 114 objek raw, 3 di luar core BBox dieksklusi -> tersisa tepat 111 shelter)
-    shelters = shelters[shelters.geometry.within(study_area)].copy()
+    # Perhitungan Kapasitas Ruang Evakuasi (Perka BNPB No. 7/2008: 3 m² per jiwa):
+    # Poligon sekolah/kampus di OSM merupakan luas batas lahan (termasuk halaman, lapangan, parkir).
+    # Kapasitas dihitung dari luas tapak bangunan aktual di dalam poligon shelter:
+    # inside = gpd.overlay(buildings[["geometry"]], shelter_polys[["id", "geometry"]], how="intersection")
+    shelter_polys = shelters[shelters.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
+    if not shelter_polys.empty:
+        inside_buildings = gpd.overlay(
+            buildings_all[["geometry"]],
+            shelter_polys[["id", "geometry"]],
+            how="intersection"
+        )
+        inside_buildings["area"] = inside_buildings.geometry.area
+        footprint_by_shelter = inside_buildings.groupby("id")["area"].sum()
+        shelters["luas_tapak_m2"] = shelters["id"].map(footprint_by_shelter).fillna(0.0)
+    else:
+        shelters["luas_tapak_m2"] = 0.0
 
-    # Perhitungan Kapasitas Ruang Evakuasi (Perka BNPB No. 7/2008: 3 m² per jiwa)
-    # Jika objek OSM berupa poligon, gunakan luas poligon aslinya.
-    # Jika objek OSM berupa Point murni (luas = 0), lakukan spatial join dengan tapak bangunan.
-    shelters["luas_tapak_m2"] = shelters["poly_area_m2"]
+    # Untuk shelter yang awalnya berupa Point di OSM (luas_tapak_m2 == 0):
     point_mask = shelters["luas_tapak_m2"] <= 0
     if point_mask.any():
         points_to_join = shelters[point_mask][["id", "geometry"]]
-        joined = gpd.sjoin(points_to_join, buildings[["geometry", "luas_tapak_m2"]], how="left", predicate="intersects")
-        # Hilangkan duplikasi jika sebuah titik menyentuh beberapa geometri bangunan
+        joined = gpd.sjoin(points_to_join, buildings_all[["geometry"]], how="left", predicate="intersects")
+        joined["bldg_area"] = joined.index_right.map(buildings_all.geometry.area)
         joined = joined[~joined.index.duplicated(keep="first")]
-        shelters.loc[joined.index, "luas_tapak_m2"] = joined["luas_tapak_m2"].fillna(DEFAULT_MIN_SHELTER_AREA_M2)
+        for _, row in joined.iterrows():
+            if pd.notna(row["bldg_area"]) and row["bldg_area"] > 0:
+                shelters.loc[shelters["id"] == row["id"], "luas_tapak_m2"] = row["bldg_area"]
+            else:
+                # Asumsi: 3 titik shelter OSM tanpa poligon bangunan diasumsikan luas 150 m2
+                shelters.loc[shelters["id"] == row["id"], "luas_tapak_m2"] = DEFAULT_MIN_SHELTER_AREA_M2
 
-    # Pastikan tidak ada luas 0 atau negatif, fallback ke nilai default 150 m²
-    shelters["luas_tapak_m2"] = shelters["luas_tapak_m2"].replace(0, DEFAULT_MIN_SHELTER_AREA_M2).fillna(DEFAULT_MIN_SHELTER_AREA_M2)
     shelters["kapasitas"] = np.floor(shelters["luas_tapak_m2"] / 3.0).astype(int).clip(lower=1)
+    
+    # Representasikan geometri seluruh shelter sebagai centroid (Point) untuk analisis jarak & perutean
+    shelters["geometry"] = shelters.geometry.centroid
 
     # 5. Layer 4: Jaringan Jalan Pejalan Kaki (Graph & LineString)
     graph_path = os.path.join(data_dir, "walk_network.graphml")
@@ -138,7 +160,7 @@ def load_all_layers(data_dir="data"):
 def validate_layers(layers):
     """
     Memvalidasi seluruh layer spasial (CRS, geometri valid, non-kosong, keunikan ID)
-    sesuai checklist evaluasi teknis.
+    sesuai checklist evaluasi teknis proposal.
     
     Args:
         layers (dict): Kamus layer yang dihasilkan oleh load_all_layers().
@@ -172,7 +194,7 @@ def create_flood_buffer(jagir_water_gdf, radius_m, study_area_poly):
     
     Args:
         jagir_water_gdf (gpd.GeoDataFrame): Poligon badan air Kali Jagir (EPSG:32749).
-        radius_m (float): Jarak luapan / buffer dalam meter.
+        radius_m (float): Jarak luapan / buffer dalam meter (misal: 15, 100, 200 m).
         study_area_poly (shapely.geometry.Polygon): Batas area studi inti untuk pemotongan.
         
     Returns:
@@ -206,14 +228,14 @@ def spatial_join_affected(features_gdf, flood_zone_geom):
 
 def generate_scenario_summary(buildings_gdf, shelters_gdf, jagir_water_gdf, study_area_poly, scenarios=None):
     """
-    Menghasilkan tabel ringkasan analisis skenario luapan multi-radius.
+    Menghasilkan tabel ringkasan analisis skenario luapan multi-radius (15 m, 100 m, 200 m).
     
     Args:
         buildings_gdf (gpd.GeoDataFrame): Layer bangunan warga (EPSG:32749).
         shelters_gdf (gpd.GeoDataFrame): Layer shelter evakuasi (EPSG:32749).
         jagir_water_gdf (gpd.GeoDataFrame): Poligon badan air Kali Jagir.
         study_area_poly (shapely.geometry.Polygon): Batas area studi inti.
-        scenarios (list, optional): Daftar radius luapan dalam meter.
+        scenarios (list, optional): Daftar radius luapan dalam meter (default: [15, 100, 200]).
         
     Returns:
         pd.DataFrame: Tabel dampak skenario multi-kriteria.
@@ -250,4 +272,3 @@ def generate_scenario_summary(buildings_gdf, shelters_gdf, jagir_water_gdf, stud
 
     summary_df = pd.DataFrame(rows)
     return summary_df
-

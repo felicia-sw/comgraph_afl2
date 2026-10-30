@@ -28,8 +28,8 @@ def main():
     print(layers["shelters"]["amenity"].value_counts().to_string())
     print(f"Total Kapasitas Seluruh Shelter: {layers['shelters']['kapasitas'].sum():,} jiwa")
 
-    print("\n[3/3] Menghitung Analisis Skenario Luapan Multi-Radius:")
-    scenarios = [15, 50, 100, 200]
+    print("\n[3/3] Menghitung Analisis Skenario Luapan Multi-Radius (Proposal: 15 m, 100 m, 200 m):")
+    scenarios = dl.DEFAULT_SCENARIOS_M
     summary_table = dl.generate_scenario_summary(
         layers["buildings"],
         layers["shelters"],

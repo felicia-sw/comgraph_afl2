@@ -35,22 +35,37 @@ Seluruh data diunduh satu kali dari OpenStreetMap (OSM) dan disimpan secara offl
    - $\approx 36.260$ poligon tapak bangunan warga di dalam area inti studi dengan identitas unik (`id`, `name`, `building`).
 3. **Layer 3: Titik Fasilitas Evakuasi / Shelter (`Point`)**
    - Fasilitas umum bertipe `amenity`: `place_of_worship`, `school`, `college`, `university`.
-   - Dari 114 objek mentah di area ber-padding, 3 objek dengan centroid di luar area inti dieksklusi sehingga menghasilkan tepat **111 titik shelter** (55 tempat ibadah, 47 sekolah, 9 kampus perguruan tinggi).
-   - **Kapasitas Ruang Pengungsi:** Dihitung berdasarkan standar **Perka BNPB No. 7/2008** ($3\text{ m}^2/\text{jiwa}$), dengan rumus:
-     $$\text{Kapasitas} = \left\lfloor \frac{\text{Luas Tapak } (m^2)}{3} \right\rfloor$$
+   - Hasil kueri fasilitas shelter pada batas koordinat area inti (*core bounding box* tanpa *padding*) menghasilkan 114 objek mentah. Setelah dilakukan pemotongan spasial ke poligon area studi inti, 3 objek dengan *centroid* di luar batas dieksklusi sehingga menghasilkan tepat **111 titik shelter** (55 tempat ibadah, 47 sekolah, 9 kampus perguruan tinggi).
+   - **Kapasitas Ruang Pengungsi:** Sesuai standar **Perka BNPB No. 7/2008** ($3\text{ m}^2/\text{jiwa}$), kapasitas dihitung dari **luas tapak bangunan aktual** di dalam batas poligon/lahan shelter menggunakan operasi tumpang-tindih geometri (`gpd.overlay(..., how='intersection')`):
+     $$\text{Kapasitas} = \left\lfloor \frac{\text{Luas Tapak Bangunan Aktual } (m^2)}{3} \right\rfloor$$
+     Total kapasitas terpasang dari 111 fasilitas shelter ini mencapai **38.230 jiwa**.
+   - **Asumsi Fasilitas Titik Murni:** Dari 111 shelter, terdapat 3 fasilitas bertipe titik murni di OSM yang tidak memiliki batas poligon bangunan (Telkom University Surabaya, Gereja Katolik Santo Yohanes Pemandi, dan GPdI Bukit Zaitun). Untuk ketiga fasilitas ini, diasumsikan luas tapak bangunan minimum standar sebesar $150\text{ m}^2$ ($\approx 50\text{ jiwa}$ sesuai standar $3\text{ m}^2/\text{jiwa}$).
 4. **Layer 4: Jaringan Jalan Pejalan Kaki (`LineString` & NetworkX Graph)**
    - Jaringan jalan pedestrian (`network_type="walk"`) terproyeksi ke `EPSG:32749` ($3.634$ simpul, $9.770$ ruas jalan).
 
 ---
 
-## 4. Pembagian Peran Tim & Arsitektur Git
+## 4. Skenario Bahaya Luapan Kali Jagir
+
+Sesuai Proposal Bab 1.2 dan 2.2, simulasi bahaya luapan Kali Jagir dimodelkan menggunakan penyanggaan spasial (*buffer*) metrik bertingkat dari poligon tepi badan air Kali Jagir:
+
+1. **Skenario 15 m (Sempadan Minimum PUPR):**
+   Berdasarkan Permen PUPR No. 28/PRT/M/2015, sempadan minimum sungai perkotaan tidak bertanggul adalah 15 m. Skenario ini memodelkan luapan dasar dengan genangan seluas $14,73\text{ ha}$, berdampak pada 244 bangunan warga ($0,67\%$, luas tapak $11.359,9\text{ m}^2$). Seluruh 111 shelter berada dalam kondisi aman (kapasitas $38.230\text{ jiwa}$).
+2. **Skenario 100 m (Luapan Hipotetis Sedang):**
+   Memodelkan kenaikan debit air yang meluap hingga radius 100 m dari badan air (luas genangan $53,09\text{ ha}$). Sebanyak 1.793 bangunan terdampak ($4,94\%$, luas tapak $128.762,0\text{ m}^2$) dan 6 shelter tergenang, menyisakan 105 shelter aman (kapasitas $37.727\text{ jiwa}$).
+3. **Skenario 200 m (Luapan Hipotetis Besar):**
+   Memodelkan skenario bencana ekstrem luapan hingga radius 200 m (luas genangan $101,12\text{ ha}$). Sebanyak 3.731 bangunan terdampak ($10,29\%$, luas tapak $287.393,1\text{ m}^2$) dan 10 shelter tergenang, menyisakan 101 shelter aman (kapasitas $36.858\text{ jiwa}$).
+
+---
+
+## 5. Pembagian Peran Tim & Arsitektur Git
 
 Proyek ini dibangun secara terintegrasi oleh 3 peran (*Orang*):
 
 | Peran | Penanggung Jawab | Fokus & Tanggung Jawab Utama | Berkas Utama |
 |---|---|---|---|
 | **ORANG 1** | *Data Engineer & Lead Integrator* | Pengunduhan data OSM, transformasi CRS metrik, penyiapan layer, pemotongan area inti, buffer sempadan banjir Kali Jagir, spatial join, tabel skenario, serta integrasi notebook. | `src/fetch_data.py`, `src/data_layers.py`, `flood_evacuation.ipynb`, `requirements.txt`, `README.md` |
-| **ORANG 2** | *Analysis & Routing Specialist* | Matriks translasi koordinat homogen 2D (Week 3), uji status bahaya warga *Point-in-Polygon* (`within`), eliminasi jalan tergenang (*subgraph* jalan kering), dan perutean rute terpendek Dijkstra/A*. | `src/analysis.py` |
+| **ORANG 2** | *Analysis & Routing Specialist* | Matriks translasi koordinat homogen 2D (Week 3), uji status bahaya warga *Point-in-Polygon* (`within`), eliminasi jalan tergenang (*subgraph* jalan kering), dan perutean rute terpendek Dijkstra. | `src/analysis.py` |
 | **ORANG 3** | *Graphics & Interactive Specialist* | Hirarki urutan *rendering* grafika komputer (*Z-order*), visualisasi peta kartografis & legenda multi-layer, kontrol interaktif `ipywidgets`, dan animasi interpolasi Bézier linear ke file GIF. | `src/graphics.py`, `output/` |
 
 ### Struktur Direktori Repositori:
@@ -63,7 +78,7 @@ Proyek ini dibangun secara terintegrasi oleh 3 peran (*Orang*):
 │   ├── shelters_raw.geojson         # Layer 3: Fasilitas umum shelter
 │   └── walk_network.graphml         # Layer 4: Jaringan jalan pejalan kaki
 ├── output/                          # Berkas luaran visualisasi & animasi
-│   └── peta_skenario.png            # Peta komparasi multi-skenario luapan
+│   └── peta_skenario.png            # Peta komparasi multi-skenario luapan (15 m, 100 m, 200 m)
 ├── src/
 │   ├── __init__.py                  # Inisialisasi paket Python
 │   ├── fetch_data.py                # Skrip pengunduh data OSM satu kali
@@ -78,7 +93,7 @@ Proyek ini dibangun secara terintegrasi oleh 3 peran (*Orang*):
 
 ---
 
-## 5. Cara Instalasi & Menjalankan
+## 6. Cara Instalasi & Menjalankan
 
 ### A. Persiapan Lingkungan Virtual (Virtual Environment)
 ```bash
@@ -104,5 +119,5 @@ jupyter notebook flood_evacuation.ipynb
 
 ---
 
-## 6. Lisensi Data
+## 7. Lisensi Data
 Sumber data geografis berasal dari **© OpenStreetMap contributors** di bawah lisensi *Open Database License (ODbL)*.
