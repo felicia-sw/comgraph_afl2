@@ -1,23 +1,3 @@
-"""
-src/graphics.py
-
-Orang 3: Peta, Interaksi & Animasi.
-Mata Kuliah: Grafika Komputer & GIS - Universitas Ciputra
-
-Isi modul:
-  1. translate()           -> geser titik dengan matriks translasi homogen 3x3 (Week 3)
-  2. walk_position()       -> posisi warga di rute, Bezier linear p(t) = (1-t)P0 + tP1
-  3. attach_start()        -> sambungkan posisi warga ke awal garis rute
-  4. draw_map()            -> gambar SATU peta lengkap
-  5. make_scenario_maps()  -> peta beberapa skenario berdampingan
-  6. build_dashboard()     -> slider, tombol U/S/T/B, input koordinat, kartu info
-  7. make_animation()      -> FuncAnimation (zona meluas + warga berjalan) -> GIF
-
-Semua koordinat memakai EPSG:32749 (meter), sama dengan hasil dl.load_all_layers().
-Fungsi milik Orang 1 / Orang 2 DIKIRIM LEWAT PARAMETER (zone_fn, status_fn, route_fn),
-jadi file ini tidak meng-import data_layers.py maupun analysis.py.
-"""
-
 import os
 
 import numpy as np
@@ -29,16 +9,13 @@ from matplotlib.patches import Patch
 from pyproj import Transformer
 from shapely.geometry import Point, LineString
 
+from src.analysis import move_citizen
+
 CRS_DEGREE = "EPSG:4326"
 CRS_METER = "EPSG:32749"
 
-# Posisi awal warga (Simpang Jalan Jagir), format (lon, lat), sama dengan notebook tim
 RESIDENT_START_DEG = (112.75026, -7.30208)
 
-# =============================================================================
-# WARNA & URUTAN GAMBAR (zorder: kecil = digambar duluan = di bawah)
-# Urutan proposal: zona -> sungai -> bangunan -> jalan & rute -> shelter -> warga -> label
-# =============================================================================
 COLORS = {
     "background": "#f4f1ea",
     "zone": "#e63946",
@@ -56,18 +33,13 @@ Z = {"zone": 1, "river": 2, "building": 3, "road": 4, "route": 5,
      "shelter": 6, "resident": 7, "label": 8, "boundary": 9}
 
 
-# =============================================================================
-# FUNGSI BANTU
-# =============================================================================
 def _clean_name(value, fallback):
-    """Nama shelter dari OSM kadang kosong/NaN/'None'. Kembalikan teks yang rapi."""
     if isinstance(value, str) and value.strip() and value.strip().lower() not in ("nan", "none"):
         return value.strip()
     return fallback
 
 
 def resident_from_lonlat(lon, lat):
-    """Ubah koordinat derajat (lon, lat) menjadi Point dalam meter (EPSG:32749)."""
     x, y = Transformer.from_crs(CRS_DEGREE, CRS_METER, always_xy=True).transform(lon, lat)
     return Point(x, y)
 
@@ -78,43 +50,7 @@ def _ensure_dir(path):
         os.makedirs(folder, exist_ok=True)
 
 
-# =============================================================================
-# 1. TRANSLASI (matriks homogen, bentuk baris)
-# =============================================================================
-def translate(point, tx, ty):
-    """
-    Geser titik sejauh (tx, ty) meter dengan matriks translasi homogen 3x3.
-
-        [x' y' 1] = [x y 1] x | 1  0  0 |
-                              | 0  1  0 |
-                              | tx ty 1 |
-
-    Translasi tidak bisa ditulis sebagai perkalian matriks 2x2. Dengan menambah
-    koordinat ketiga bernilai 1 (koordinat homogen), geser menjadi perkalian
-    matriks, sehingga bisa digabung dengan rotasi dan skala.
-    """
-    T = np.array([
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-        [tx, ty, 1.0],
-    ])
-    x_new, y_new, _ = np.array([point.x, point.y, 1.0]) @ T
-    return Point(x_new, y_new)
-
-
-# =============================================================================
-# 2. POSISI WARGA DI SEPANJANG RUTE (Bezier linear)
-# =============================================================================
 def walk_position(line, t):
-    """
-    Posisi warga di garis rute untuk t = 0 (awal) sampai t = 1 (akhir).
-
-    Rute adalah polyline (banyak segmen lurus). Pada satu segmen P0 -> P1 dipakai
-    interpolasi linear (= kurva Bezier linear):
-            p(u) = (1 - u) * P0 + u * P1 ,   0 <= u <= 1
-    t dari seluruh rute diubah dulu menjadi jarak tempuh, lalu dicari segmen
-    tempat warga berada dan u = posisi di dalam segmen itu. Kecepatan konstan.
-    """
     coords = np.asarray(line.coords, dtype=float)[:, :2]
     if len(coords) == 1:
         return Point(coords[0])
@@ -137,10 +73,6 @@ def walk_position(line, t):
 
 
 def attach_start(resident, routes):
-    """
-    Rute dari analysis.py dimulai di simpul jalan terdekat, bukan di posisi warga.
-    Fungsi ini menambahkan posisi warga di awal garis supaya rute tersambung ke warga.
-    """
     if resident is None or not routes:
         return routes or []
     out = []
@@ -152,37 +84,19 @@ def attach_start(resident, routes):
     return out
 
 
-# =============================================================================
-# 3. MENGGAMBAR SATU PETA
-# =============================================================================
 def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=True):
-    """
-    Gambar peta lengkap pada sumbu `ax`.
-
-    Args:
-        ax:       sumbu matplotlib (dari plt.subplots()).
-        layers:   dict dari dl.load_all_layers().
-        zone:     poligon zona bahaya (dl.create_flood_buffer).
-        resident: Point posisi warga (EPSG:32749), boleh None.
-        routes:   list dict dari top_evacuation_routes, boleh None / kosong.
-        title:    judul peta.
-        legend:   True = tampilkan legenda.
-    """
     study_area = layers["study_area"]
     ax.set_facecolor(COLORS["background"])
     zone_ok = zone is not None and not zone.is_empty
 
-    # 1) Zona bahaya: merah transparan
     if zone_ok:
         gpd.GeoSeries([zone]).plot(ax=ax, color=COLORS["zone"], alpha=0.30, zorder=Z["zone"])
 
-    # 2) Sungai: biru
     if len(layers["water"]):
         layers["water"].plot(ax=ax, color=COLORS["river"], zorder=Z["river"])
     if len(layers["rivers"]):
         layers["rivers"].plot(ax=ax, color=COLORS["river"], linewidth=1.2, zorder=Z["river"])
 
-    # 3) Bangunan: abu-abu, merah jika terdampak
     bld = layers["buildings"]
     hit_b = bld.intersects(zone).to_numpy() if zone_ok else np.zeros(len(bld), dtype=bool)
     if (~hit_b).any():
@@ -190,7 +104,6 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
     if hit_b.any():
         bld[hit_b].plot(ax=ax, color=COLORS["building_hit"], linewidth=0, zorder=Z["building"])
 
-    # 4) Jalan (abu tipis) lalu rute evakuasi (kuning dengan garis tepi gelap)
     if len(layers["roads"]):
         layers["roads"].plot(ax=ax, color=COLORS["road"], linewidth=0.5, zorder=Z["road"])
     for r in (routes or []):
@@ -200,7 +113,6 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
         ax.plot(xs, ys, color=COLORS["route"], linewidth=3,
                 solid_capstyle="round", zorder=Z["route"] + 0.1)
 
-    # 5) Shelter: hijau = aman, merah = tergenang
     sh = layers["shelters"]
     hit_s = sh.intersects(zone).to_numpy() if zone_ok else np.zeros(len(sh), dtype=bool)
     for mask, key in ((~hit_s, "shelter_safe"), (hit_s, "shelter_hit")):
@@ -209,7 +121,6 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
             ax.scatter(s.geometry.x, s.geometry.y, s=40, marker="s", c=COLORS[key],
                        edgecolors="white", linewidths=0.8, zorder=Z["shelter"])
 
-    # 6) Warga
     if resident is not None:
         ax.scatter([resident.x], [resident.y], s=130, marker="o", c=COLORS["resident"],
                    edgecolors="white", linewidths=1.5, zorder=Z["resident"])
@@ -217,20 +128,18 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
                     textcoords="offset points", fontsize=9, fontweight="bold",
                     zorder=Z["label"])
 
-    # 7) Label
     if len(layers["jagir_water"]):
-        p = layers["jagir_water"].geometry.union_all().representative_point()
+        p = layers["jagir_water"].geometry.union_all().intersection(study_area).representative_point()
         ax.annotate("Kali Jagir", (p.x, p.y), fontsize=9, style="italic", color="#1d4ed8",
                     zorder=Z["label"],
                     bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.7, lw=0))
-    for r in (routes or []):
+    for i, r in enumerate(routes or []):
         ex, ey = r["rute"].coords[-1][:2]
         nama = _clean_name(r.get("nama"), str(r.get("jenis", "Shelter")))
-        ax.annotate(f"{nama}\n{r['jarak_m']} m", (ex, ey), xytext=(6, -14),
+        ax.annotate(f"{i + 1}. {nama}\n{r['jarak_m']} m", (ex, ey), xytext=(8, 6 - 26 * i),
                     textcoords="offset points", fontsize=7, zorder=Z["label"],
                     bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.8, lw=0))
 
-    # Batas area inti studi
     gpd.GeoSeries([study_area]).boundary.plot(ax=ax, color="black", linestyle="--",
                                               linewidth=1.2, zorder=Z["boundary"])
 
@@ -239,12 +148,12 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
     ax.set_ylim(miny, maxy)
     ax.set_aspect("equal")
     ax.tick_params(labelsize=7)
+    ax.ticklabel_format(useOffset=False, style="plain")
     ax.set_xlabel("Easting (m, UTM 49S)", fontsize=8)
     ax.set_ylabel("Northing (m, UTM 49S)", fontsize=8)
     if title:
         ax.set_title(title, fontsize=11, fontweight="bold")
 
-    # 8) Legenda
     if legend:
         handles = [
             Patch(facecolor=COLORS["river"], label="Sungai"),
@@ -260,21 +169,11 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
                    markersize=9, label="Warga"),
             Line2D([0], [0], color="black", linestyle="--", linewidth=1, label="Batas area inti"),
         ]
-        ax.legend(handles=handles, loc="lower left", fontsize=7, framealpha=0.9)
+        ax.legend(handles=handles, loc="lower left", fontsize=7, framealpha=0.9).set_zorder(20)
 
 
-# =============================================================================
-# 4. PETA BEBERAPA SKENARIO BERDAMPINGAN
-# =============================================================================
 def make_scenario_maps(layers, zone_fn, radii=(15, 100, 200), resident=None,
                        route_fn=None, status_fn=None, save_path=None):
-    """
-    Args:
-        zone_fn:   r -> poligon zona
-        route_fn:  (point, zone) -> list rute (boleh None)
-        status_fn: (point, zone) -> "AMAN"/"BAHAYA" (boleh None)
-        save_path: contoh "output/skenario.png"
-    """
     n = len(radii)
     fig, axes = plt.subplots(1, n, figsize=(7 * n, 7))
     axes = np.atleast_1d(axes)
@@ -297,9 +196,6 @@ def make_scenario_maps(layers, zone_fn, radii=(15, 100, 200), resident=None,
     return fig
 
 
-# =============================================================================
-# 5. DASHBOARD INTERAKTIF (ipywidgets)
-# =============================================================================
 def _info_card_html(status, n_hit, n_total, routes, radius):
     color = "#d62828" if status == "BAHAYA" else "#2a9d4a"
     html = (f"<div style='border:2px solid {color};border-radius:8px;padding:10px;"
@@ -323,10 +219,6 @@ def _info_card_html(status, n_hit, n_total, routes, radius):
 
 
 def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_step=50):
-    """
-    Dashboard: slider radius, kotak langkah (m), tombol Utara/Selatan/Timur/Barat,
-    input koordinat (lon/lat), peta, dan kartu info.
-    """
     import ipywidgets as widgets
     from IPython.display import display, clear_output, HTML
 
@@ -382,7 +274,7 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
             display(HTML(_info_card_html(status, n_hit, len(bld), routes, slider.value)))
 
     def move(dx, dy):
-        new_p = translate(state["resident"], dx, dy)
+        new_p = move_citizen(state["resident"], dx, dy)
         if not new_p.within(layers["study_area"]):
             msg.value = "<span style='color:#d62828'>Gerakan dibatalkan: keluar dari area studi.</span>"
             return
@@ -420,21 +312,9 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
     refresh()
 
 
-# =============================================================================
-# 6. ANIMASI (FuncAnimation) -> GIF
-# =============================================================================
 def make_animation(layers, zone_fn, route_fn, resident, r_start=15, r_end=200,
                    n_zone_frames=15, n_walk_frames=20, n_hold_frames=4,
                    save_path="output/evakuasi.gif", fps=5):
-    """
-    Dua tahap:
-      1) radius naik r_start -> r_end (zona bahaya meluas)
-      2) warga berjalan menyusuri rute terbaik pada zona akhir (r_end)
-
-    GIF: tiap frame digambar menjadi satu gambar, lalu PillowWriter menyusun semuanya.
-    Dengan 36 ribu bangunan tiap frame butuh beberapa detik, jadi total bisa beberapa menit.
-    """
-    # Siapkan semua frame (hanya data) lebih dulu
     frames = []
     for r in np.linspace(r_start, r_end, n_zone_frames):
         frames.append({"zone": zone_fn(r), "resident": resident, "routes": [],
