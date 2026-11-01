@@ -31,6 +31,7 @@ Seluruh data diunduh satu kali dari OpenStreetMap (OSM) dan disimpan secara offl
 1. **Layer 1: Kali Jagir (`LineString` & `Polygon`)**
    - 3 segmen garis aliran sungai Kali Jagir ($\approx 2.5\text{ km}$ di dalam area inti) dan poligon badan air (`natural=water`).
    - Sesuai **Permen PUPR No. 28/PRT/M/2015**, zona sempadan dan bahaya luapan diukur langsung dari **tepi luar poligon badan air sungai**, bukan sekadar poros garis tengah sungai.
+   - Zona tidak dipotong ke area inti agar jalan tergenang di area *padding* ikut dihapus saat perutean; luas genangan dan jumlah bangunan dilaporkan untuk area inti.
 2. **Layer 2: Tapak Bangunan Warga (`Polygon`)**
    - $\approx 36.260$ poligon tapak bangunan warga di dalam area inti studi dengan identitas unik (`id`, `name`, `building`).
 3. **Layer 3: Titik Fasilitas Evakuasi / Shelter (`Point`)**
@@ -52,9 +53,9 @@ Sesuai Proposal Bab 1.2 dan 2.2, simulasi bahaya luapan Kali Jagir dimodelkan me
 1. **Skenario 15 m (Sempadan Minimum PUPR):**
    Berdasarkan Permen PUPR No. 28/PRT/M/2015, sempadan minimum sungai perkotaan tidak bertanggul adalah 15 m. Skenario ini memodelkan luapan dasar dengan genangan seluas $14,73\text{ ha}$, berdampak pada 244 bangunan warga ($0,67\%$, luas tapak $11.359,9\text{ m}^2$). Seluruh 111 shelter berada dalam kondisi aman (kapasitas $38.230\text{ jiwa}$).
 2. **Skenario 100 m (Luapan Hipotetis Sedang):**
-   Memodelkan kenaikan debit air yang meluap hingga radius 100 m dari badan air (luas genangan $53,09\text{ ha}$). Sebanyak 1.793 bangunan terdampak ($4,94\%$, luas tapak $128.762,0\text{ m}^2$) dan 6 shelter tergenang, menyisakan 105 shelter aman (kapasitas $37.727\text{ jiwa}$).
+   Memodelkan kenaikan debit air yang meluap hingga radius 100 m dari badan air (luas genangan $53,10\text{ ha}$). Sebanyak 1.794 bangunan terdampak ($4,95\%$, luas tapak $129.155,6\text{ m}^2$) dan 6 shelter tergenang, menyisakan 105 shelter aman (kapasitas $37.727\text{ jiwa}$).
 3. **Skenario 200 m (Luapan Hipotetis Besar):**
-   Memodelkan skenario bencana ekstrem luapan hingga radius 200 m (luas genangan $101,12\text{ ha}$). Sebanyak 3.731 bangunan terdampak ($10,29\%$, luas tapak $287.393,1\text{ m}^2$) dan 10 shelter tergenang, menyisakan 101 shelter aman (kapasitas $36.858\text{ jiwa}$).
+   Memodelkan skenario bencana ekstrem luapan hingga radius 200 m (luas genangan $101,14\text{ ha}$). Sebanyak 3.731 bangunan terdampak ($10,29\%$, luas tapak $287.393,1\text{ m}^2$) dan 10 shelter tergenang, menyisakan 101 shelter aman (kapasitas $36.858\text{ jiwa}$).
 
 ---
 
@@ -78,7 +79,8 @@ Proyek ini dibangun secara terintegrasi oleh 3 peran (*Orang*):
 │   ├── shelters_raw.geojson         # Layer 3: Fasilitas umum shelter
 │   └── walk_network.graphml         # Layer 4: Jaringan jalan pejalan kaki
 ├── output/                          # Berkas luaran visualisasi & animasi
-│   └── peta_skenario.png            # Peta komparasi multi-skenario luapan (15 m, 100 m, 200 m)
+│   ├── peta_skenario.png            # Peta komparasi multi-skenario luapan (15 m, 100 m, 200 m)
+│   └── animasi_evakuasi.gif         # Animasi zona meluas + warga berjalan ke shelter
 ├── src/
 │   ├── __init__.py                  # Inisialisasi paket Python
 │   ├── fetch_data.py                # Skrip pengunduh data OSM satu kali
