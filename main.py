@@ -1,11 +1,3 @@
-"""
-main.py
-
-Pipeline Runner dan Validasi Layer Spasial Luapan Kali Jagir.
-Menjalankan integrasi layer spasial, transformasi koordinat (CRS),
-dan simulasi buffer bahaya luapan.
-"""
-
 import sys
 import src.data_layers as dl
 
@@ -34,7 +26,6 @@ def main():
         layers["buildings"],
         layers["shelters"],
         layers["jagir_water"],
-        layers["study_area"],
         scenarios=scenarios
     )
     print(summary_table.to_string(index=False))
