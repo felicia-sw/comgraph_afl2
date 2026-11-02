@@ -8,8 +8,9 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from pyproj import Transformer
 from shapely.geometry import Point, LineString
-
 from src.analysis import move_citizen
+from src.data_layers import spatial_join_affected
+
 
 CRS_DEGREE = "EPSG:4326"
 CRS_METER = "EPSG:32749"
@@ -38,7 +39,7 @@ def _clean_name(value, fallback):
         return value.strip()
     return fallback
 
-
+# ubah koordinat derajat (lon, lat) menjadi point dalam meter (EPSG:32749)
 def resident_from_lonlat(lon, lat):
     x, y = Transformer.from_crs(CRS_DEGREE, CRS_METER, always_xy=True).transform(lon, lat)
     return Point(x, y)
@@ -98,7 +99,7 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
         layers["rivers"].plot(ax=ax, color=COLORS["river"], linewidth=1.2, zorder=Z["river"])
 
     bld = layers["buildings"]
-    hit_b = bld.intersects(zone).to_numpy() if zone_ok else np.zeros(len(bld), dtype=bool)
+    hit_b = spatial_join_affected(bld, zone) if zone_ok else np.zeros(len(bld), dtype=bool)
     if (~hit_b).any():
         bld[~hit_b].plot(ax=ax, color=COLORS["building_safe"], linewidth=0, zorder=Z["building"])
     if hit_b.any():
@@ -114,7 +115,7 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
                 solid_capstyle="round", zorder=Z["route"] + 0.1)
 
     sh = layers["shelters"]
-    hit_s = sh.intersects(zone).to_numpy() if zone_ok else np.zeros(len(sh), dtype=bool)
+    hit_s = spatial_join_affected(sh, zone) if zone_ok else np.zeros(len(sh), dtype=bool)
     for mask, key in ((~hit_s, "shelter_safe"), (hit_s, "shelter_hit")):
         if mask.any():
             s = sh[mask]
@@ -262,7 +263,7 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
         status = status_fn(p, zone)
         routes = route_fn(p, zone) if status == "BAHAYA" else []
         bld = layers["buildings"]
-        n_hit = 0 if zone.is_empty else int(bld.intersects(zone).sum())
+        n_hit = 0 if zone.is_empty else int(spatial_join_affected(bld, zone).sum())
 
         with out:
             clear_output(wait=True)

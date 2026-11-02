@@ -5,6 +5,10 @@ from shapely.geometry import Point, LineString
 
 TOP_N_SHELTERS = 3
 
+
+#  geser titik warga sejauh (tx, ty) meter dengan matriks translasi homogen : [x' y' 1] = [x y 1] x [[1, 0, 0], [0, 1, 0], [tx, ty, 1]]
+    
+
 def move_citizen(point, tx, ty):
     T = np.array([
         [1, 0, 0],
@@ -14,6 +18,8 @@ def move_citizen(point, tx, ty):
     x_new, y_new, _ = np.array([point.x, point.y, 1]) @ T
     return Point(x_new, y_new)
 
+
+# Operasi GIS 3: point-in-polygon. BAHAYA jika titik warga ada di dalam zona banjir.  
 def citizen_status(point, zone):
     return "BAHAYA" if point.within(zone) else "AMAN"
 
@@ -24,6 +30,7 @@ def dry_graph(graph, roads, zone):
     g.remove_nodes_from(list(nx.isolates(g)))
     return g
 
+# Operasi GIS 4: n shelter aman terdekat lewat jalan kering (Dijkstra, bobot = panjang ruas).
 def top_evacuation_routes(point, zone, graph, roads, shelters, safe_mask, n=TOP_N_SHELTERS):
     g = dry_graph(graph, roads, zone)
     if g.number_of_nodes() == 0:

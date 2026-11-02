@@ -1,5 +1,4 @@
 import os
-import time
 import osmnx as ox
 import geopandas as gpd
 import pandas as pd
@@ -16,29 +15,37 @@ DATA_DIR = "data"
 os.makedirs(DATA_DIR, exist_ok=True)
 
 
+# bounding box area inti dan area + 500m padding dalam EPSG:4326   
 def get_padded_bbox():
     core_poly = box(WEST, SOUTH, EAST, NORTH)
     core_gdf = gpd.GeoDataFrame({"id": ["core"]}, geometry=[core_poly], crs="EPSG:4326")
-
+    
+    # Simpan batas area inti untuk dipakai clipping di load_layers()
     core_file = os.path.join(DATA_DIR, "core_bbox.geojson")
     if not os.path.exists(core_file):
         core_gdf.to_file(core_file, driver="GeoJSON")
 
+    # transform ke EPSG:32749 (meter) untuk tambah jarak pinggir 500 m
     padded_utm = core_gdf.to_crs("EPSG:32749").buffer(PADDING_METERS)
     padded_wgs84 = padded_utm.to_crs("EPSG:4326")
 
+    # ambil bounds: (minx/west, miny/south, maxx/east, maxy/north)
     w, s, e, n = padded_wgs84.total_bounds
     return (w, s, e, n)
 
-
+# Helper kompatibel untuk OSMnx v2.0+ maupun v1.x  
 def fetch_osm_features(bbox_tuple, tags):
     w, s, e, n = bbox_tuple
     try:
+        # OSMnx >= 2.0 use urutan (left/west, bottom/south, right/east, top/north)
         return ox.features_from_bbox(bbox=(w, s, e, n), tags=tags)
     except TypeError:
+        # Fallback kl pake OSMnx < 2.0 (north, south, east, west)
         return ox.features_from_bbox(north=n, south=s, east=e, west=w, tags=tags)
 
 
+
+# Helper download graph kompatibel untuk OSMnx v2.0+ maupun v1.x
 def fetch_osm_graph(bbox_tuple, network_type="walk"):
     w, s, e, n = bbox_tuple
     try:
@@ -46,7 +53,7 @@ def fetch_osm_graph(bbox_tuple, network_type="walk"):
     except TypeError:
         return ox.graph_from_bbox(north=n, south=s, east=e, west=w, network_type=network_type)
 
-
+#  clean data type list/dict dari OSM spy ga error pas disimpan ke GeoJSON
 def clean_columns_for_geojson(gdf, keep_cols):
     gdf = gdf.reset_index()
     available_cols = [c for c in keep_cols if c in gdf.columns]
@@ -62,6 +69,7 @@ def main():
     print(f"Core BBox   : ({WEST}, {SOUTH}, {EAST}, {NORTH})")
     print(f"Padded BBox : { tuple(round(x, 5) for x in padded_bbox) }")
 
+    # LAYER 1A: Garis Aliran Sungai Kali Jagir (LineString)
     river_file = os.path.join(DATA_DIR, "kali_jagir_lines.geojson")
     if not os.path.exists(river_file):
         print("\n=== 2. Mengunduh Layer 1A: Garis Aliran Sungai (waterway=river) ===")
@@ -73,6 +81,7 @@ def main():
     else:
         print(f"\n[SKIP] Layer 1A ({river_file}) sudah ada.")
 
+    # LAYER 1B: Poligon Badan Air Sungai (Polygon)
     water_file = os.path.join(DATA_DIR, "kali_jagir_water_poly.geojson")
     if not os.path.exists(water_file):
         print("\n=== 3. Mengunduh Layer 1B: Poligon Badan Air Sungai ===")
@@ -85,6 +94,7 @@ def main():
     else:
         print(f"\n[SKIP] Layer 1B ({water_file}) sudah ada.")
 
+    # LAYER 2: Tapak Bangunan Warga (Polygon)
     bldg_file = os.path.join(DATA_DIR, "buildings.geojson")
     if not os.path.exists(bldg_file):
         print("\n=== 4. Mengunduh Layer 2: Tapak Bangunan (building=*) ===")
@@ -96,6 +106,7 @@ def main():
     else:
         print(f"\n[SKIP] Layer 2 ({bldg_file}) sudah ada.")
 
+    # LAYER 3: Fasilitas Umum / Kandidat Shelter (school, college, university, place_of_worship)
     shelter_file = os.path.join(DATA_DIR, "shelters_raw.geojson")
     if not os.path.exists(shelter_file):
         print("\n=== 5. Mengunduh Layer 3: Titik Evakuasi / Shelter ===")
@@ -117,6 +128,7 @@ def main():
     else:
         print(f"\n[SKIP] Layer 3 ({shelter_file}) sudah ada.")
 
+    # LAYER 4: Jaringan Jalan Pejalan Kaki (GraphML)
     walk_file = os.path.join(DATA_DIR, "walk_network.graphml")
     if not os.path.exists(walk_file):
         print("\n=== 6. Mengunduh Layer 4: Jaringan Jalan Pejalan Kaki (network_type='walk') ===")

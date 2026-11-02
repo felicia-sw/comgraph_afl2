@@ -25,35 +25,47 @@ def get_study_area_polygon():
 def load_all_layers(data_dir="data"):
     study_area = get_study_area_polygon()
 
+    # Garis aliran sungai (ls)
     rivers_path = os.path.join(data_dir, "kali_jagir_lines.geojson")
     rivers = gpd.read_file(rivers_path).to_crs(CRS_METER).clip(study_area)
     rivers = rivers[rivers.geometry.type.isin(["LineString", "MultiLineString"])].copy()
 
+    # Poligon badan air sungai (poly)
     water_path = os.path.join(data_dir, "kali_jagir_water_poly.geojson")
     water = gpd.read_file(water_path).to_crs(CRS_METER)
     water = water[water.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
-
+    
+    # extract poligon spesifik Jagir untuk acuan buffer bahaya luapan
     jagir_water = water[water["name"] == "Kali Jagir"].copy()
     if jagir_water.empty:
-        jagir_water = water.loc[[water.area.idxmax()]].copy()
+        # Fallback if name is unknown, pake poligon air terbesar
+        jagir_water = water.sort_values(by=water.geometry.area, ascending=False).iloc[[0]].copy()
 
+    # tapak Bangunan warga (poly)
     buildings_path = os.path.join(data_dir, "buildings.geojson")
     buildings_all = gpd.read_file(buildings_path).to_crs(CRS_METER)
     buildings = buildings_all.clip(study_area)
     buildings = buildings[buildings.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
     buildings["luas_tapak_m2"] = buildings.geometry.area
 
+    # Fasilitas umum / kandidat shelter (Point)
     shelters_path = os.path.join(data_dir, "shelters_raw.geojson")
     shelters_raw = gpd.read_file(shelters_path).to_crs(CRS_METER)
 
+    # Dari 114 objek raw hasil query bbox area inti, 3 objek dengan centroid di luar core BBox
+    # hasil: 55 tempat ibadah, 47 sekolah, 9 kampusi
     shelters = shelters_raw[shelters_raw.geometry.centroid.within(study_area)].copy()
 
+    # Perhitungan Kapasitas Ruang Evakuasi (Perka BNPB No. 7/2008: 3 m² per jiwa):
+    # Poligon sekolah/kampus di OSM merupakan luas batas lahan (termasuk halaman, lapangan, parkir).
+    # Kapasitas dihitung dari luas tapak bangunan aktual di dalam poligon shelter:
     shelter_polys = shelters[shelters.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
     if not shelter_polys.empty:
         inside_buildings = gpd.overlay(
             buildings_all[["geometry"]],
             shelter_polys[["id", "geometry"]],
-            how="intersection"
+            how="intersection",
+            keep_geom_type=False
         )
         inside_buildings["area"] = inside_buildings.geometry.area
         footprint_by_shelter = inside_buildings.groupby("id")["area"].sum()
@@ -74,9 +86,11 @@ def load_all_layers(data_dir="data"):
                 shelters.loc[shelters["id"] == row["id"], "luas_tapak_m2"] = DEFAULT_MIN_SHELTER_AREA_M2
 
     shelters["kapasitas"] = np.floor(shelters["luas_tapak_m2"] / 3.0).astype(int).clip(lower=1)
-
+    
+    # representasikan geometri seluruh shelter sebagai point untuk analisis jarak & perutean
     shelters["geometry"] = shelters.geometry.centroid
 
+    # walkable street (Graph & LineString)
     graph_path = os.path.join(data_dir, "walk_network.graphml")
     G_raw = ox.load_graphml(graph_path)
     G_proj = ox.project_graph(G_raw, to_crs=CRS_METER)
@@ -113,18 +127,29 @@ def validate_layers(layers):
     return validation_df
 
 
-def create_flood_buffer(jagir_water_gdf, radius_m):
-    return jagir_water_gdf.buffer(radius_m).union_all()
 
+#GIS Operation 1: buat zona yg bahaya hasil bufferdaraai tepi sungai (soalnya ngikut yg permen)
+def create_flood_buffer(jagir_water_gdf, radius_m, study_area_poly=None):
+    if study_area_poly is None:
+        study_area_poly = get_study_area_polygon()
+    if radius_m <= 0:
+        return jagir_water_gdf.union_all().intersection(study_area_poly)
+    
+    buffered = jagir_water_gdf.buffer(radius_m).union_all()
+    clipped_zone = buffered.intersection(study_area_poly)
+    return clipped_zone
 
+#GIS Operation 2: spatial join antara fitur sama zona bahaya (harus intresect g bis within)
 def spatial_join_affected(features_gdf, flood_zone_geom):
     zone_gdf = gpd.GeoDataFrame(geometry=[flood_zone_geom], crs=CRS_METER)
     joined = gpd.sjoin(features_gdf, zone_gdf, how="left", predicate="intersects")
     is_affected = joined["index_right"].notna().to_numpy()
     return is_affected
 
-
-def generate_scenario_summary(buildings_gdf, shelters_gdf, jagir_water_gdf, scenarios=None):
+#GIS Operation 3: ringkasan skenario luapan multi radius (in tbale format)
+def generate_scenario_summary(buildings_gdf, shelters_gdf, jagir_water_gdf, study_area_poly=None, scenarios=None):
+    if study_area_poly is None:
+        study_area_poly = get_study_area_polygon()
     if scenarios is None:
         scenarios = DEFAULT_SCENARIOS_M
 
@@ -133,7 +158,7 @@ def generate_scenario_summary(buildings_gdf, shelters_gdf, jagir_water_gdf, scen
     rows = []
 
     for r in scenarios:
-        zone = create_flood_buffer(jagir_water_gdf, r)
+        zone = create_flood_buffer(jagir_water_gdf, r, study_area_poly)
         hit_buildings = spatial_join_affected(buildings_gdf, zone)
         flooded_shelters = spatial_join_affected(shelters_gdf, zone)
 
