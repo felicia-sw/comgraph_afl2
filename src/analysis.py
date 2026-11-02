@@ -57,7 +57,6 @@ def top_evacuation_routes(point, zone, graph, roads, shelters, safe_mask, n=TOP_
             {
                 "nama": shelter.get("name"),
                 "jenis": shelter["amenity"],
-                "kapasitas": int(shelter["kapasitas"]),
                 "jarak_m": round(walk_to_road + dist),
                 "rute": LineString(coords),
             })

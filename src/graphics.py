@@ -137,7 +137,7 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
     for i, r in enumerate(routes or []):
         ex, ey = r["rute"].coords[-1][:2]
         nama = _clean_name(r.get("nama"), str(r.get("jenis", "Shelter")))
-        ax.annotate(f"{i + 1}. {nama}\n{r['jarak_m']} m", (ex, ey), xytext=(8, 6 - 26 * i),
+        ax.annotate(f"{i + 1}. {nama}\n{r['jarak_m']} m</li>", (ex, ey), xytext=(8, 6 - 26 * i),
                     textcoords="offset points", fontsize=7, zorder=Z["label"],
                     bbox=dict(boxstyle="round,pad=0.2", fc="white", alpha=0.8, lw=0))
 
@@ -213,13 +213,14 @@ def _info_card_html(status, n_hit, n_total, routes, radius):
         html += "<b>Shelter aman terdekat:</b><ol style='margin:4px 0'>"
         for r in routes:
             nama = _clean_name(r.get("nama"), "(tanpa nama)")
-            html += (f"<li>{nama} ({r.get('jenis', '-')}) - {r['jarak_m']} m, "
-                     f"kapasitas {r['kapasitas']} jiwa</li>")
+            html += f"<li>{nama} ({r.get('jenis', '-')}) - {r['jarak_m']} m</li>"
         html += "</ol>"
     return html + "</div>"
 
 
-def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_step=50):
+def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point=None, default_step=50):
+    if start_point is None:
+        start_point = resident_from_lonlat(*RESIDENT_START_DEG)
     import ipywidgets as widgets
     from IPython.display import display, clear_output, HTML
 
@@ -313,9 +314,11 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
     refresh()
 
 
-def make_animation(layers, zone_fn, route_fn, resident, r_start=15, r_end=200,
+def make_animation(layers, zone_fn, route_fn, resident=None, r_start=15, r_end=200,
                    n_zone_frames=15, n_walk_frames=20, n_hold_frames=4,
                    save_path="output/evakuasi.gif", fps=5):
+    if resident is None:
+        resident = resident_from_lonlat(*RESIDENT_START_DEG)
     frames = []
     for r in np.linspace(r_start, r_end, n_zone_frames):
         frames.append({"zone": zone_fn(r), "resident": resident, "routes": [],

@@ -13,7 +13,6 @@ CORE_BBOX = (WEST, SOUTH, EAST, NORTH)
 
 DEFAULT_SCENARIOS_M = [15, 100, 200]
 
-DEFAULT_MIN_SHELTER_AREA_M2 = 150.0
 
 
 def get_study_area_polygon():
@@ -37,10 +36,7 @@ def load_all_layers(data_dir="data"):
     
     # extract poligon spesifik Jagir untuk acuan buffer bahaya luapan
     jagir_water = water[water["name"] == "Kali Jagir"].copy()
-    if jagir_water.empty:
-        # Fallback if name is unknown, pake poligon air terbesar
-        jagir_water = water.sort_values(by=water.geometry.area, ascending=False).iloc[[0]].copy()
-
+   
     # tapak Bangunan warga (poly)
     buildings_path = os.path.join(data_dir, "buildings.geojson")
     buildings_all = gpd.read_file(buildings_path).to_crs(CRS_METER)
@@ -55,39 +51,7 @@ def load_all_layers(data_dir="data"):
     # Dari 114 objek raw hasil query bbox area inti, 3 objek dengan centroid di luar core BBox
     # hasil: 55 tempat ibadah, 47 sekolah, 9 kampusi
     shelters = shelters_raw[shelters_raw.geometry.centroid.within(study_area)].copy()
-
-    # Perhitungan Kapasitas Ruang Evakuasi (Perka BNPB No. 7/2008: 3 m² per jiwa):
-    # Poligon sekolah/kampus di OSM merupakan luas batas lahan (termasuk halaman, lapangan, parkir).
-    # Kapasitas dihitung dari luas tapak bangunan aktual di dalam poligon shelter:
-    shelter_polys = shelters[shelters.geometry.type.isin(["Polygon", "MultiPolygon"])].copy()
-    if not shelter_polys.empty:
-        inside_buildings = gpd.overlay(
-            buildings_all[["geometry"]],
-            shelter_polys[["id", "geometry"]],
-            how="intersection",
-            keep_geom_type=False
-        )
-        inside_buildings["area"] = inside_buildings.geometry.area
-        footprint_by_shelter = inside_buildings.groupby("id")["area"].sum()
-        shelters["luas_tapak_m2"] = shelters["id"].map(footprint_by_shelter).fillna(0.0)
-    else:
-        shelters["luas_tapak_m2"] = 0.0
-
-    point_mask = shelters["luas_tapak_m2"] <= 0
-    if point_mask.any():
-        points_to_join = shelters[point_mask][["id", "geometry"]]
-        joined = gpd.sjoin(points_to_join, buildings_all[["geometry"]], how="left", predicate="intersects")
-        joined["bldg_area"] = joined.index_right.map(buildings_all.geometry.area)
-        joined = joined[~joined.index.duplicated(keep="first")]
-        for _, row in joined.iterrows():
-            if pd.notna(row["bldg_area"]) and row["bldg_area"] > 0:
-                shelters.loc[shelters["id"] == row["id"], "luas_tapak_m2"] = row["bldg_area"]
-            else:
-                shelters.loc[shelters["id"] == row["id"], "luas_tapak_m2"] = DEFAULT_MIN_SHELTER_AREA_M2
-
-    shelters["kapasitas"] = np.floor(shelters["luas_tapak_m2"] / 3.0).astype(int).clip(lower=1)
-    
-    # representasikan geometri seluruh shelter sebagai point untuk analisis jarak & perutean
+    # Representasikan geometri seluruh shelter sebagai point untuk analisis jarak & perutean
     shelters["geometry"] = shelters.geometry.centroid
 
     # walkable street (Graph & LineString)
@@ -168,7 +132,6 @@ def generate_scenario_summary(buildings_gdf, shelters_gdf, jagir_water_gdf, stud
 
         num_flooded_shelters = int(flooded_shelters.sum())
         num_safe_shelters = int((~flooded_shelters).sum())
-        safe_capacity = int(shelters_gdf.loc[~flooded_shelters, "kapasitas"].sum())
 
         rows.append({
             "Radius Luapan (m)": r,
@@ -177,7 +140,6 @@ def generate_scenario_summary(buildings_gdf, shelters_gdf, jagir_water_gdf, stud
             "Luas Tapak Terdampak (m²)": round(area_hit_bldgs, 1),
             "Shelter Tergenang (Titik)": num_flooded_shelters,
             "Shelter Aman (Titik)": num_safe_shelters,
-            "Total Kapasitas Shelter Aman (Jiwa)": safe_capacity,
         })
 
     summary_df = pd.DataFrame(rows)
