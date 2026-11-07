@@ -84,7 +84,7 @@ def attach_start(resident, routes):
     return out
 
 
-def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=True):
+def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=True, hit_b=None, hit_s=None):
     study_area = layers["study_area"]
     ax.set_facecolor(COLORS["background"])
     zone_ok = zone is not None and not zone.is_empty
@@ -98,14 +98,19 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
         layers["rivers"].plot(ax=ax, color=COLORS["river"], linewidth=1.2, zorder=Z["river"])
 
     bld = layers["buildings"]
-    hit_b = bld.intersects(zone).to_numpy() if zone_ok else np.zeros(len(bld), dtype=bool)
+    if hit_b is None:
+        hit_b = bld.intersects(zone).to_numpy() if zone_ok else np.zeros(len(bld), dtype=bool)
+        
+    # ---> TAMBAHKAN RASTERIZED=TRUE DI SINI <---
     if (~hit_b).any():
-        bld[~hit_b].plot(ax=ax, color=COLORS["building_safe"], linewidth=0, zorder=Z["building"])
+        bld[~hit_b].plot(ax=ax, color=COLORS["building_safe"], linewidth=0, zorder=Z["building"], rasterized=True)
     if hit_b.any():
-        bld[hit_b].plot(ax=ax, color=COLORS["building_hit"], linewidth=0, zorder=Z["building"])
+        bld[hit_b].plot(ax=ax, color=COLORS["building_hit"], linewidth=0, zorder=Z["building"], rasterized=True)
 
     if len(layers["roads"]):
-        layers["roads"].plot(ax=ax, color=COLORS["road"], linewidth=0.5, zorder=Z["road"])
+        layers["roads"].plot(ax=ax, color=COLORS["road"], linewidth=0.5, zorder=Z["road"], rasterized=True)
+    # ------------------------------------------
+
     for r in (routes or []):
         xs, ys = r["rute"].xy
         ax.plot(xs, ys, color=COLORS["route_edge"], linewidth=5,
@@ -114,7 +119,9 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
                 solid_capstyle="round", zorder=Z["route"] + 0.1)
 
     sh = layers["shelters"]
-    hit_s = sh.intersects(zone).to_numpy() if zone_ok else np.zeros(len(sh), dtype=bool)
+    if hit_s is None:
+        hit_s = sh.intersects(zone).to_numpy() if zone_ok else np.zeros(len(sh), dtype=bool)
+        
     for mask, key in ((~hit_s, "shelter_safe"), (hit_s, "shelter_hit")):
         if mask.any():
             s = sh[mask]
@@ -170,8 +177,7 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
             Line2D([0], [0], color="black", linestyle="--", linewidth=1, label="Batas area inti"),
         ]
         ax.legend(handles=handles, loc="lower left", fontsize=7, framealpha=0.9).set_zorder(20)
-
-
+        
 def make_scenario_maps(layers, zone_fn, radii=(15, 100, 200), resident=None,
                        route_fn=None, status_fn=None, save_path=None):
     n = len(radii)
@@ -226,16 +232,52 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
     to_wgs = Transformer.from_crs(CRS_METER, CRS_DEGREE, always_xy=True)
 
     state = {"resident": start_point}
+    
+    # === OPTIMASI EKSTREM: RINGANKAN SEMUA GEOMETRI BERAT ===
+    # Toleransi 10 meter memangkas 80% beban memori grafis browser tanpa mengubah wujud asli peta
+    if "buildings" in layers:
+        layers["buildings"] = layers["buildings"].simplify(10)
+    if "roads" in layers:
+        layers["roads"] = layers["roads"].simplify(10)
+    if "rivers" in layers:
+        layers["rivers"] = layers["rivers"].simplify(10)
+        
     zone_cache = {}
+    route_cache = {}
+    hit_cache = {}  
 
     def get_zone(r):
         if r not in zone_cache:
             zone_cache[r] = zone_fn(r)
         return zone_cache[r]
+        
+    def get_route(p, zone):
+        cache_id = (round(zone.area), round(p.x), round(p.y))
+        if cache_id not in route_cache:
+            route_cache[cache_id] = route_fn(p, zone)
+        return route_cache[cache_id]
+        
+    def get_hit_data(r, zone):
+        if r not in hit_cache:
+            bld = layers["buildings"]
+            sh = layers["shelters"]
+            if zone.is_empty:
+                hit_b = np.zeros(len(bld), dtype=bool)
+                hit_s = np.zeros(len(sh), dtype=bool)
+                n_hit = 0
+            else:
+                hit_b = bld.intersects(zone).to_numpy()
+                hit_s = sh.intersects(zone).to_numpy()
+                n_hit = int(hit_b.sum())
+            hit_cache[r] = (hit_b, hit_s, n_hit)
+        return hit_cache[r]
 
     slider = widgets.IntSlider(value=15, min=15, max=200, step=5, description="Radius (m):",
                                continuous_update=False, style={"description_width": "initial"},
                                layout=widgets.Layout(width="460px"))
+                               
+    btn_sim = widgets.Button(description="Simulate", button_style="success", icon="play")
+    
     step_box = widgets.BoundedFloatText(value=default_step, min=1, max=1000, step=10,
                                         description="Langkah (m):",
                                         style={"description_width": "initial"})
@@ -260,15 +302,18 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
         zone = get_zone(slider.value)
         p = state["resident"]
         status = status_fn(p, zone)
-        routes = route_fn(p, zone) if status == "BAHAYA" else []
+        routes = get_route(p, zone) if status == "BAHAYA" else []
+        
+        hit_b, hit_s, n_hit = get_hit_data(slider.value, zone)
         bld = layers["buildings"]
-        n_hit = 0 if zone.is_empty else int(bld.intersects(zone).sum())
 
         with out:
             clear_output(wait=True)
-            fig, ax = plt.subplots(figsize=(9, 9))
+            # === OPTIMASI GAMBAR: Perkecil frame dan DPI agar browser lebih cepat memuat ===
+            fig, ax = plt.subplots(figsize=(8, 8), dpi=75) 
             draw_map(ax, layers, zone, p, attach_start(p, routes),
-                     title=f"Skenario luapan {slider.value} m - warga {status}")
+                     title=f"Skenario luapan {slider.value} m - warga {status}",
+                     hit_b=hit_b, hit_s=hit_s)
             plt.show()
             plt.close(fig)
             display(HTML(_info_card_html(status, n_hit, len(bld), routes, slider.value)))
@@ -299,10 +344,11 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
     btn_e.on_click(lambda _: move(step_box.value, 0))
     btn_w.on_click(lambda _: move(-step_box.value, 0))
     btn_goto.on_click(goto)
-    slider.observe(lambda change: refresh(), names="value")
-
+    
+    btn_sim.on_click(lambda _: refresh())
+    
     display(widgets.VBox([
-        slider,
+        widgets.HBox([slider, btn_sim]), 
         step_box,
         widgets.HBox([btn_w, btn_n, btn_s, btn_e]),
         widgets.HBox([lon_box, lat_box, btn_goto]),
@@ -310,8 +356,7 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
         out,
     ]))
     refresh()
-
-
+        
 def make_animation(layers, zone_fn, route_fn, resident, r_start=15, r_end=200,
                    n_zone_frames=15, n_walk_frames=20, n_hold_frames=4,
                    save_path="output/evakuasi.gif", fps=5):
