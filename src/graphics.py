@@ -227,14 +227,13 @@ def _info_card_html(status, n_hit, n_total, routes, radius):
 def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_step=50):
     import ipywidgets as widgets
     from IPython.display import display, clear_output, HTML
+    from geopy.geocoders import Nominatim  # <-- Library baru untuk convert alamat ke koordinat
 
     to_utm = Transformer.from_crs(CRS_DEGREE, CRS_METER, always_xy=True)
     to_wgs = Transformer.from_crs(CRS_METER, CRS_DEGREE, always_xy=True)
 
     state = {"resident": start_point}
     
-    # === OPTIMASI EKSTREM: RINGANKAN SEMUA GEOMETRI BERAT ===
-    # Toleransi 10 meter memangkas 80% beban memori grafis browser tanpa mengubah wujud asli peta
     if "buildings" in layers:
         layers["buildings"] = layers["buildings"].simplify(10)
     if "roads" in layers:
@@ -272,7 +271,7 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
             hit_cache[r] = (hit_b, hit_s, n_hit)
         return hit_cache[r]
 
-    slider = widgets.IntSlider(value=15, min=15, max=200, step=5, description="Radius (m):",
+    slider = widgets.IntSlider(value=15, min=15, max=500, step=5, description="Radius (m):",
                                continuous_update=False, style={"description_width": "initial"},
                                layout=widgets.Layout(width="460px"))
                                
@@ -286,17 +285,12 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
     btn_e = widgets.Button(description="Timur", icon="arrow-right")
     btn_w = widgets.Button(description="Barat", icon="arrow-left")
 
-    lon0, lat0 = to_wgs.transform(start_point.x, start_point.y)
-    lon_box = widgets.FloatText(value=round(lon0, 6), description="Lon (BT):")
-    lat_box = widgets.FloatText(value=round(lat0, 6), description="Lat (LS):")
-    btn_goto = widgets.Button(description="Pindah ke koordinat", button_style="info")
+    # ---> GANTI KOTAK LON/LAT MENJADI KOTAK TEKS ALAMAT <---
+    address_box = widgets.Text(placeholder='Contoh: Jl. Jagir Wonokromo', description='Alamat:', layout=widgets.Layout(width='350px'))
+    btn_search = widgets.Button(description="Cari Alamat", button_style="info", icon="search")
 
     msg = widgets.HTML("")
     out = widgets.Output()
-
-    def sync_coord_boxes():
-        lon, lat = to_wgs.transform(state["resident"].x, state["resident"].y)
-        lon_box.value, lat_box.value = round(lon, 6), round(lat, 6)
 
     def refresh():
         zone = get_zone(slider.value)
@@ -309,7 +303,6 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
 
         with out:
             clear_output(wait=True)
-            # === OPTIMASI GAMBAR: Perkecil frame dan DPI agar browser lebih cepat memuat ===
             fig, ax = plt.subplots(figsize=(8, 8), dpi=75) 
             draw_map(ax, layers, zone, p, attach_start(p, routes),
                      title=f"Skenario luapan {slider.value} m - warga {status}",
@@ -325,39 +318,57 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
             return
         msg.value = ""
         state["resident"] = new_p
-        sync_coord_boxes()
         refresh()
 
-    def goto(_):
-        x, y = to_utm.transform(lon_box.value, lat_box.value)
-        new_p = Point(x, y)
-        if not new_p.within(layers["study_area"]):
-            msg.value = ("<span style='color:#d62828'>Koordinat di luar area studi "
-                         "(112.728-112.760 BT, -7.312 s/d -7.292 LS).</span>")
+    def search_address(_):
+        alamat = address_box.value.strip()
+        if not alamat:
+            msg.value = "<span style='color:#d62828'>Masukkan alamat terlebih dahulu!</span>"
             return
-        msg.value = ""
-        state["resident"] = new_p
-        refresh()
+            
+        msg.value = "<i>Sedang mencari koordinat, mohon tunggu...</i>"
+        try:
+            # Menggunakan API Nominatim secara gratis
+            geolocator = Nominatim(user_agent="afl2_evakuasi_app")
+            # Menambahkan konteks Surabaya agar pencarian difokuskan ke area studi
+            lokasi = geolocator.geocode(alamat + ", Surabaya, Indonesia")
+            
+            if lokasi:
+                x, y = to_utm.transform(lokasi.longitude, lokasi.latitude)
+                new_p = Point(x, y)
+                if not new_p.within(layers["study_area"]):
+                    msg.value = (f"<span style='color:#d62828'>Lokasi ditemukan ({lokasi.address}) "
+                                 f"tapi berada di luar batas area studi peta ini.</span>")
+                    return
+                
+                msg.value = f"<span style='color:#2a9d4a'>Berhasil pindah ke: {lokasi.address}</span>"
+                state["resident"] = new_p
+                refresh()
+            else:
+                msg.value = "<span style='color:#d62828'>Alamat tidak ditemukan. Pastikan nama jalan atau tempat spesifik.</span>"
+        except Exception as e:
+            msg.value = f"<span style='color:#d62828'>Gagal mencari alamat, periksa koneksi internetmu.</span>"
 
     btn_n.on_click(lambda _: move(0, step_box.value))
     btn_s.on_click(lambda _: move(0, -step_box.value))
     btn_e.on_click(lambda _: move(step_box.value, 0))
     btn_w.on_click(lambda _: move(-step_box.value, 0))
-    btn_goto.on_click(goto)
     
+    # Hubungkan tombol cari ke fungsi yang baru dibuat
+    btn_search.on_click(search_address)
     btn_sim.on_click(lambda _: refresh())
     
     display(widgets.VBox([
         widgets.HBox([slider, btn_sim]), 
         step_box,
         widgets.HBox([btn_w, btn_n, btn_s, btn_e]),
-        widgets.HBox([lon_box, lat_box, btn_goto]),
+        widgets.HBox([address_box, btn_search]), # <-- KOMPONEN ALAMAT DITAMPILKAN DI SINI
         msg,
         out,
     ]))
     refresh()
         
-def make_animation(layers, zone_fn, route_fn, resident, r_start=15, r_end=200,
+def make_animation(layers, zone_fn, route_fn, resident, r_start=15, r_end=500,
                    n_zone_frames=15, n_walk_frames=20, n_hold_frames=4,
                    save_path="output/evakuasi.gif", fps=5):
     frames = []
