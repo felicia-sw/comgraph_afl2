@@ -101,7 +101,6 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
     if hit_b is None:
         hit_b = bld.intersects(zone).to_numpy() if zone_ok else np.zeros(len(bld), dtype=bool)
         
-    # ---> TAMBAHKAN RASTERIZED=TRUE DI SINI <---
     if (~hit_b).any():
         bld[~hit_b].plot(ax=ax, color=COLORS["building_safe"], linewidth=0, zorder=Z["building"], rasterized=True)
     if hit_b.any():
@@ -109,8 +108,7 @@ def draw_map(ax, layers, zone, resident=None, routes=None, title=None, legend=Tr
 
     if len(layers["roads"]):
         layers["roads"].plot(ax=ax, color=COLORS["road"], linewidth=0.5, zorder=Z["road"], rasterized=True)
-    # ------------------------------------------
-
+    
     for r in (routes or []):
         xs, ys = r["rute"].xy
         ax.plot(xs, ys, color=COLORS["route_edge"], linewidth=5,
@@ -226,8 +224,11 @@ def _info_card_html(status, n_hit, n_total, routes, radius):
 
 def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_step=50):
     import ipywidgets as widgets
-    from IPython.display import display, clear_output, HTML
-    from geopy.geocoders import Nominatim  # <-- Library baru untuk convert alamat ke koordinat
+    from IPython.display import display, HTML
+    from geopy.geocoders import Nominatim
+    import numpy as np
+    import io
+    import matplotlib.pyplot as plt
 
     to_utm = Transformer.from_crs(CRS_DEGREE, CRS_METER, always_xy=True)
     to_wgs = Transformer.from_crs(CRS_METER, CRS_DEGREE, always_xy=True)
@@ -275,7 +276,7 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
                                continuous_update=False, style={"description_width": "initial"},
                                layout=widgets.Layout(width="460px"))
                                
-    btn_sim = widgets.Button(description="Simulate", button_style="success", icon="play")
+    btn_sim = widgets.Button(description="Simulate", button_style="success", icon="play", layout=widgets.Layout(width="150px"))
     
     step_box = widgets.BoundedFloatText(value=default_step, min=1, max=1000, step=10,
                                         description="Langkah (m):",
@@ -285,31 +286,51 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
     btn_e = widgets.Button(description="Timur", icon="arrow-right")
     btn_w = widgets.Button(description="Barat", icon="arrow-left")
 
-    # ---> GANTI KOTAK LON/LAT MENJADI KOTAK TEKS ALAMAT <---
     address_box = widgets.Text(placeholder='Contoh: Jl. Jagir Wonokromo', description='Alamat:', layout=widgets.Layout(width='350px'))
     btn_search = widgets.Button(description="Cari Alamat", button_style="info", icon="search")
 
     msg = widgets.HTML("")
-    out = widgets.Output()
+    map_widget = widgets.Image(format='png', layout=widgets.Layout(width='100%', max_width='800px'))
+    info_box = widgets.HTML("")
 
-    def refresh():
+    def refresh(is_preview=False):
         zone = get_zone(slider.value)
         p = state["resident"]
         status = status_fn(p, zone)
         routes = get_route(p, zone) if status == "BAHAYA" else []
         
         hit_b, hit_s, n_hit = get_hit_data(slider.value, zone)
-        bld = layers["buildings"]
+        
+        active_layers = layers.copy()
+        if is_preview:
+            active_layers["buildings"] = layers["buildings"].head(0)
+            active_layers["roads"] = layers["roads"].head(0)
+            pass_hit_b = np.zeros(0, dtype=bool) 
+        else:
+            pass_hit_b = hit_b
 
-        with out:
-            clear_output(wait=True)
-            fig, ax = plt.subplots(figsize=(8, 8), dpi=75) 
-            draw_map(ax, layers, zone, p, attach_start(p, routes),
-                     title=f"Skenario luapan {slider.value} m - warga {status}",
-                     hit_b=hit_b, hit_s=hit_s)
-            plt.show()
-            plt.close(fig)
-            display(HTML(_info_card_html(status, n_hit, len(bld), routes, slider.value)))
+        info_box.value = _info_card_html(status, n_hit, len(layers["buildings"]), routes, slider.value)
+        plt.ioff() 
+        fig, ax = plt.subplots(figsize=(8, 8), dpi=75)
+        
+        draw_map(ax, active_layers, zone, p, attach_start(p, routes),
+                 title=f"Skenario luapan {slider.value} m - warga {status}",
+                 hit_b=pass_hit_b, hit_s=hit_s)
+        
+        if is_preview:
+            ax.text(0.5, 0.98, "⚡ PREVIEW MODE (CEPAT) - KLIK 'SIMULATE' UNTUK PETA UTUH ⚡", 
+                    transform=ax.transAxes, ha='center', va='top', 
+                    color='red', fontweight='bold', fontsize=10, 
+                    bbox=dict(facecolor='white', alpha=0.8, edgecolor='red'))
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', bbox_inches='tight')
+        buf.seek(0)
+        
+        plt.close(fig) 
+        plt.ion() 
+        
+        map_widget.value = buf.read()
 
     def move(dx, dy):
         new_p = move_citizen(state["resident"], dx, dy)
@@ -318,7 +339,7 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
             return
         msg.value = ""
         state["resident"] = new_p
-        refresh()
+        refresh(is_preview=True) 
 
     def search_address(_):
         alamat = address_box.value.strip()
@@ -328,9 +349,7 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
             
         msg.value = "<i>Sedang mencari koordinat, mohon tunggu...</i>"
         try:
-            # Menggunakan API Nominatim secara gratis
             geolocator = Nominatim(user_agent="afl2_evakuasi_app")
-            # Menambahkan konteks Surabaya agar pencarian difokuskan ke area studi
             lokasi = geolocator.geocode(alamat + ", Surabaya, Indonesia")
             
             if lokasi:
@@ -343,9 +362,9 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
                 
                 msg.value = f"<span style='color:#2a9d4a'>Berhasil pindah ke: {lokasi.address}</span>"
                 state["resident"] = new_p
-                refresh()
+                refresh(is_preview=True) 
             else:
-                msg.value = "<span style='color:#d62828'>Alamat tidak ditemukan. Pastikan nama jalan atau tempat spesifik.</span>"
+                msg.value = "<span style='color:#d62828'>Alamat tidak ditemukan. Pastikan spesifik.</span>"
         except Exception as e:
             msg.value = f"<span style='color:#d62828'>Gagal mencari alamat, periksa koneksi internetmu.</span>"
 
@@ -354,20 +373,20 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
     btn_e.on_click(lambda _: move(step_box.value, 0))
     btn_w.on_click(lambda _: move(-step_box.value, 0))
     
-    # Hubungkan tombol cari ke fungsi yang baru dibuat
     btn_search.on_click(search_address)
-    btn_sim.on_click(lambda _: refresh())
+    btn_sim.on_click(lambda _: refresh(is_preview=False))
     
     display(widgets.VBox([
         widgets.HBox([slider, btn_sim]), 
         step_box,
         widgets.HBox([btn_w, btn_n, btn_s, btn_e]),
-        widgets.HBox([address_box, btn_search]), # <-- KOMPONEN ALAMAT DITAMPILKAN DI SINI
+        widgets.HBox([address_box, btn_search]),
         msg,
-        out,
+        map_widget,
+        info_box
     ]))
-    refresh()
-        
+    refresh(is_preview=False)
+                
 def make_animation(layers, zone_fn, route_fn, resident, r_start=15, r_end=500,
                    n_zone_frames=15, n_walk_frames=20, n_hold_frames=4,
                    save_path="output/evakuasi.gif", fps=5):
