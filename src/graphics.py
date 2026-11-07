@@ -229,6 +229,7 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
     import numpy as np
     import io
     import matplotlib.pyplot as plt
+    from shapely.geometry import Point, LineString 
 
     to_utm = Transformer.from_crs(CRS_DEGREE, CRS_METER, always_xy=True)
     to_wgs = Transformer.from_crs(CRS_METER, CRS_DEGREE, always_xy=True)
@@ -272,7 +273,27 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
             hit_cache[r] = (hit_b, hit_s, n_hit)
         return hit_cache[r]
 
-    slider = widgets.IntSlider(value=15, min=15, max=500, step=5, description="Radius (m):",
+    def fix_route_endpoints(resident, routes, shelters, hit_s):
+        if resident is None or not routes:
+            return routes or []
+        out = []
+        safe_shelters = shelters[~hit_s] if hit_s is not None else shelters
+        for r in routes:
+            rc = [tuple(c[:2]) for c in r["rute"].coords]
+            coords = [(resident.x, resident.y)] + rc
+            
+            if not safe_shelters.empty:
+                end_pt = Point(rc[-1])
+                closest_idx = safe_shelters.distance(end_pt).idxmin()
+                sg = safe_shelters.loc[closest_idx].geometry
+                coords.append((sg.x, sg.y))
+                
+            new_r = dict(r)
+            new_r["rute"] = LineString(coords)
+            out.append(new_r)
+        return out
+
+    slider = widgets.IntSlider(value=15, min=15, max=200, step=5, description="Radius (m):",
                                continuous_update=False, style={"description_width": "initial"},
                                layout=widgets.Layout(width="460px"))
                                
@@ -290,38 +311,27 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
     btn_search = widgets.Button(description="Cari Alamat", button_style="info", icon="search")
 
     msg = widgets.HTML("")
+    
     map_widget = widgets.Image(format='png', layout=widgets.Layout(width='100%', max_width='800px'))
     info_box = widgets.HTML("")
 
-    def refresh(is_preview=False):
+    def refresh():
         zone = get_zone(slider.value)
         p = state["resident"]
         status = status_fn(p, zone)
         routes = get_route(p, zone) if status == "BAHAYA" else []
         
         hit_b, hit_s, n_hit = get_hit_data(slider.value, zone)
-        
-        active_layers = layers.copy()
-        if is_preview:
-            active_layers["buildings"] = layers["buildings"].head(0)
-            active_layers["roads"] = layers["roads"].head(0)
-            pass_hit_b = np.zeros(0, dtype=bool) 
-        else:
-            pass_hit_b = hit_b
 
         info_box.value = _info_card_html(status, n_hit, len(layers["buildings"]), routes, slider.value)
+
         plt.ioff() 
         fig, ax = plt.subplots(figsize=(8, 8), dpi=75)
+        perfect_routes = fix_route_endpoints(p, routes, layers["shelters"], hit_s)
         
-        draw_map(ax, active_layers, zone, p, attach_start(p, routes),
+        draw_map(ax, layers, zone, p, perfect_routes,
                  title=f"Skenario luapan {slider.value} m - warga {status}",
-                 hit_b=pass_hit_b, hit_s=hit_s)
-        
-        if is_preview:
-            ax.text(0.5, 0.98, "⚡ PREVIEW MODE (CEPAT) - KLIK 'SIMULATE' UNTUK PETA UTUH ⚡", 
-                    transform=ax.transAxes, ha='center', va='top', 
-                    color='red', fontweight='bold', fontsize=10, 
-                    bbox=dict(facecolor='white', alpha=0.8, edgecolor='red'))
+                 hit_b=hit_b, hit_s=hit_s)
 
         buf = io.BytesIO()
         fig.savefig(buf, format='png', bbox_inches='tight')
@@ -339,7 +349,7 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
             return
         msg.value = ""
         state["resident"] = new_p
-        refresh(is_preview=True) 
+        refresh() 
 
     def search_address(_):
         alamat = address_box.value.strip()
@@ -362,7 +372,7 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
                 
                 msg.value = f"<span style='color:#2a9d4a'>Berhasil pindah ke: {lokasi.address}</span>"
                 state["resident"] = new_p
-                refresh(is_preview=True) 
+                refresh() 
             else:
                 msg.value = "<span style='color:#d62828'>Alamat tidak ditemukan. Pastikan spesifik.</span>"
         except Exception as e:
@@ -374,7 +384,7 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
     btn_w.on_click(lambda _: move(-step_box.value, 0))
     
     btn_search.on_click(search_address)
-    btn_sim.on_click(lambda _: refresh(is_preview=False))
+    btn_sim.on_click(lambda _: refresh())
     
     display(widgets.VBox([
         widgets.HBox([slider, btn_sim]), 
@@ -385,18 +395,67 @@ def build_dashboard(layers, zone_fn, status_fn, route_fn, start_point, default_s
         map_widget,
         info_box
     ]))
-    refresh(is_preview=False)
-                
-def make_animation(layers, zone_fn, route_fn, resident, r_start=15, r_end=500,
+    refresh()
+    
+                    
+def make_animation(layers, zone_fn, route_fn, resident, r_start=15, r_end=200,
                    n_zone_frames=15, n_walk_frames=20, n_hold_frames=4,
                    save_path="output/evakuasi.gif", fps=5):
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.animation import FuncAnimation, PillowWriter
+    from shapely.geometry import Point, LineString
+
+    active_layers = layers.copy()
+    if "buildings" in active_layers:
+        active_layers["buildings"] = active_layers["buildings"].simplify(10)
+    if "roads" in active_layers:
+        active_layers["roads"] = active_layers["roads"].simplify(10)
+    if "rivers" in active_layers:
+        active_layers["rivers"] = active_layers["rivers"].simplify(10)
+
+    hit_cache = {}
+    def get_hit_data(zone):
+        z_id = round(zone.area)
+        if z_id not in hit_cache:
+            if zone.is_empty:
+                hb = np.zeros(len(active_layers["buildings"]), dtype=bool)
+                hs = np.zeros(len(active_layers["shelters"]), dtype=bool)
+            else:
+                hb = active_layers["buildings"].intersects(zone).to_numpy()
+                hs = active_layers["shelters"].intersects(zone).to_numpy()
+            hit_cache[z_id] = (hb, hs)
+        return hit_cache[z_id]
+
+    
+    def fix_route_endpoints(res, rts, sh_layers, hs_mask):
+        if res is None or not rts:
+            return rts or []
+        out = []
+        safe_shelters = sh_layers[~hs_mask] if hs_mask is not None else sh_layers
+        for r in rts:
+            rc = [tuple(c[:2]) for c in r["rute"].coords]
+            coords = [(res.x, res.y)] + rc
+            if not safe_shelters.empty:
+                end_pt = Point(rc[-1])
+                closest_idx = safe_shelters.distance(end_pt).idxmin()
+                sg = safe_shelters.loc[closest_idx].geometry
+                coords.append((sg.x, sg.y))
+            new_r = dict(r)
+            new_r["rute"] = LineString(coords)
+            out.append(new_r)
+        return out
+
     frames = []
     for r in np.linspace(r_start, r_end, n_zone_frames):
         frames.append({"zone": zone_fn(r), "resident": resident, "routes": [],
                        "title": f"Luapan naik: {r:.0f} m"})
 
     final_zone = zone_fn(r_end)
-    routes = attach_start(resident, route_fn(resident, final_zone))
+    raw_routes = route_fn(resident, final_zone)
+    hb_final, hs_final = get_hit_data(final_zone)
+    routes = fix_route_endpoints(resident, raw_routes, active_layers["shelters"], hs_final)
+    
     if routes:
         best = routes[0]
         for t in np.linspace(0, 1, n_walk_frames):
@@ -411,17 +470,23 @@ def make_animation(layers, zone_fn, route_fn, resident, r_start=15, r_end=500,
             frames.append({"zone": final_zone, "resident": resident, "routes": [],
                            "title": f"Tidak ada rute kering (luapan {r_end} m)"})
 
-    fig, ax = plt.subplots(figsize=(8, 8))
+    plt.ioff()
+    fig, ax = plt.subplots(figsize=(8, 8), dpi=60)
 
     def update(i):
         ax.clear()
         f = frames[i]
-        draw_map(ax, layers, f["zone"], f["resident"], f["routes"], title=f["title"])
+        hb, hs = get_hit_data(f["zone"])
+        draw_map(ax, active_layers, f["zone"], f["resident"], f["routes"], 
+                 title=f["title"], hit_b=hb, hit_s=hs)
         return []
 
     anim = FuncAnimation(fig, update, frames=len(frames), interval=1000 / fps,
                          blit=False, repeat=False)
     _ensure_dir(save_path)
-    anim.save(save_path, writer=PillowWriter(fps=fps), dpi=80)
+    anim.save(save_path, writer=PillowWriter(fps=fps), dpi=60)
+    
     plt.close(fig)
+    plt.ion()
+    
     return save_path
